@@ -5,6 +5,7 @@ import {
   Pressable,
   StyleSheet,
   Text,
+  ScrollView,
   TextInput,
   View,
   Switch,
@@ -26,6 +27,7 @@ export default function App() {
   const [broadcastMessage, setBroadcastMessage] = useState('');
   const [isBrowsing, setIsBrowsing] = useState(false);
   const [isAdvertising, setIsAdvertising] = useState(false);
+  const [devLogs, setDevLogs] = useState([]);
   const [peers, setPeers] = useState<
     Record<
       string,
@@ -39,7 +41,43 @@ export default function App() {
     null
   );
 
+  const addLog = (msg) => setDevLogs(l => [...l, msg]);
 
+  const sendMessage = (msg, isBroadcast, targetId = null, skip = null) => {
+    if (!msg || !session) return;
+
+    // Format based on broadcast flag
+    const text = isBroadcast ? `[BR] ${msg}` : msg;
+    addLog(`sendMessage: ${text}`);
+
+    if (isBroadcast) {
+      // send to all connected peers
+      Object.keys(peers).forEach((id) => {
+        if (peers[id].state === PeerState.connected) {
+          session.sendText(id, text);
+
+          setReceivedMessages(draft => {
+            (draft[id] ||= []).push(text);
+            return draft;
+          });
+        }
+      });
+      return;
+    }
+
+    // direct message
+    if (!targetId) {
+      addLog("sendMessage error: Missing targetId for direct message");
+      return;
+    }
+
+    session.sendText(targetId, text);
+
+    setReceivedMessages(draft => {
+      (draft[targetId] ||= []).push(text);
+      return draft;
+    });
+  };
   
   // Simple pseudo-unique ID generator
   const generateID = () =>
@@ -118,7 +156,11 @@ export default function App() {
 
     const r6 = session.onReceivedPeerInvitation((ev) => ev.handler(true));
     const r7 = session.onReceivedText((ev) => {
-      let msg = ev.text; 
+    let msg = ev.text; 
+
+      addLog(ev.text);
+      addLog(ev.peer.id);
+      addLog("==========")
     
       setReceivedMessages(
         produce((draft) => {
@@ -128,13 +170,9 @@ export default function App() {
     
       // Relay broadcast messages
       if (msg.startsWith('[BR]')) {
-        
-        Object.keys(peersRef.current).forEach((id) => {
-          const p = peersRef.current[id];
-          if (id !== ev.peer.id && p.state === PeerState.connected) {
-            session?.sendText(id, ev.text);
-          }
-        });
+        // strip the broadcast prefix before re-sending
+        const clean = msg.replace(/^\[BR\]\s?/, '');
+        sendMessage(clean, true);
       }
     });
 
@@ -194,6 +232,7 @@ export default function App() {
           <Switch
             value={isBrowsing}
             onValueChange={(v) => {
+              addLog("switch pressed");
               setIsBrowsing(v);
               v ? session?.browse() : session?.stopBrowsing();
               setIsAdvertising(v);
@@ -226,8 +265,7 @@ export default function App() {
           
             Object.keys(peers).forEach((id) => {
               if (peers[id].state === PeerState.connected) {
-                session?.sendText(id, formattedMsg);
-                
+                sendMessage(formattedMsg, true);
                 // Add the sent message to local state so it displays
                 setReceivedMessages(
                   produce((draft) => {
@@ -281,6 +319,11 @@ export default function App() {
           </View>
         ))}
       </View>
+              <ScrollView>
+        {devLogs.map((l, i) => (
+          <Text key={i}>{l}</Text>
+        ))}
+      </ScrollView>
     </View>
   );
 }
