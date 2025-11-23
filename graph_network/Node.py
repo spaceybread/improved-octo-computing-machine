@@ -1,5 +1,5 @@
 from collections import deque
-
+import time
 class Node:
     def __init__(self, MAC:str, neighbors=None):
         self.MAC = MAC
@@ -7,7 +7,49 @@ class Node:
         self.cc = {self}
         if neighbors:
             self.add_node(neighbors)
-            
+        self.time = time.time()
+    
+    def update(self, neighbors):
+        self.time = time.time()
+        neighbors = set(neighbors)
+
+        old_neighbors = self.neighbors
+        removed = old_neighbors - neighbors
+        added = neighbors - old_neighbors
+
+        for nbr in removed:
+            nbr.neighbors.discard(self)
+        for nbr in added:
+            nbr.neighbors.add(self)
+
+        self.neighbors = neighbors
+
+        def bfs(start, visited_global):
+            comp = set()
+            q = deque([start])
+            visited_global.add(start)
+
+            while q:
+                node = q.popleft()
+                comp.add(node)
+                for nbr in node.neighbors:
+                    if nbr not in visited_global:
+                        visited_global.add(nbr)
+                        q.append(nbr)
+            return comp
+
+        visited_global = set()
+
+        comp_self = bfs(self, visited_global)
+        for node in comp_self:
+            node.cc = comp_self
+
+        for nbr in removed:
+            if nbr not in visited_global:
+                comp = bfs(nbr, visited_global)
+                for node in comp:
+                    node.cc = comp
+
     def __repr__(self):
         return f"Node({self.MAC})"
 
@@ -27,7 +69,6 @@ class Node:
                 if n not in visited:
                     q.append(n)
 
-
     def remove_node(self):
         nbrs = list(self.neighbors)
         for n in nbrs:
@@ -35,23 +76,23 @@ class Node:
         
         self.neighbors = set()
         self.cc = set()
-        visited = set() # recompute CC for each disconnected region
+        visited_global = set() # recompute CC for each disconnected region
 
-        def recompute_cc(start): # helper
+        def recompute_cc(start, visited_global): # helper
             cc = set()
             q = deque([start])
-            visited.add(start)
+            visited_global.add(start)
             while q:
                 node = q.popleft()
                 cc.add(node)
                 for nbr in node.neighbors:
-                    if nbr not in visited:
-                        visited.add(nbr)
+                    if nbr not in visited_global:
+                        visited_global.add(nbr)
                         q.append(nbr)
             return cc
 
         for nbr in nbrs:
-            if nbr not in visited:
+            if nbr not in visited_global:
                 comp = recompute_cc(nbr)
                 for node in comp:
                     node.cc = comp
