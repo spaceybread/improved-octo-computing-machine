@@ -16,6 +16,8 @@ import {
   RNPeer,
 } from 'react-native-multipeer-connectivity';
 import { produce } from 'immer';
+import { Alert } from 'react-native';
+
 
 export default function App() {
   const [displayName, setDisplayName] = useState('');
@@ -54,6 +56,12 @@ export default function App() {
       setPersistentID(storedID);
     })();
   }, []);
+
+  const peersRef = React.useRef(peers);
+
+  useEffect(() => {
+    peersRef.current = peers;
+  }, [peers]);
 
   useEffect(() => {
     if (!session) return;
@@ -107,7 +115,7 @@ export default function App() {
       }
     });
     
-    
+
     const r6 = session.onReceivedPeerInvitation((ev) => ev.handler(true));
     const r7 = session.onReceivedText((ev) => {
       let msg = ev.text; 
@@ -119,10 +127,12 @@ export default function App() {
       );
     
       // Relay broadcast messages
-      if (/^\[.*?\]\s/.test(ev.text)) {
-        Object.keys(peers).forEach((id) => {
-          if (id !== ev.peer.id && peers[id].state === PeerState.connected) {
-            session?.sendText(id, ev.text);
+      if (msg.startsWith('[BR]')) {
+        
+        Object.keys(peersRef.current).forEach((id) => {
+          const p = peersRef.current[id];
+          if (id !== ev.peer.id && p.state === PeerState.connected) {
+            session?.sendText(id, ev.text + " <Relayed>");
           }
         });
       }
@@ -212,7 +222,7 @@ export default function App() {
             const msg = broadcastMessage.trim();
             if (!msg) return;
           
-            const formattedMsg = "[📣] " + msg;
+            const formattedMsg = "[BR] " + msg;
           
             Object.keys(peers).forEach((id) => {
               if (peers[id].state === PeerState.connected) {
