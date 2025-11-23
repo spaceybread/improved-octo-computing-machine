@@ -191,7 +191,7 @@ export default function App() {
 
             Object.keys(peers).forEach((id) => {
               if (peers[id].state === PeerState.connected) {
-                session?.sendText(id, msg);
+                session?.sendText(id, "[📣]" + msg);
               }
             });
 
