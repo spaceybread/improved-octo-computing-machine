@@ -94,8 +94,8 @@ export default function App() {
     const r7 = session.onReceivedText((ev) => {
       // Ignore handshake messages
       let msg = ev.text; 
-      if (ev.text !== "HANDSHAKE3141") msg = "";
-      
+      if (ev.text === "HANDSHAKE3141") msg = "";
+
       setReceivedMessages(
         produce((draft) => {
           (draft[ev.peer.id] ||= []).push(msg);
@@ -203,13 +203,22 @@ export default function App() {
           onSubmitEditing={() => {
             const msg = broadcastMessage.trim();
             if (!msg) return;
-
+          
+            const formattedMsg = "[📣] " + msg;
+          
             Object.keys(peers).forEach((id) => {
               if (peers[id].state === PeerState.connected) {
-                session?.sendText(id, "[📣] " + msg);
+                session?.sendText(id, formattedMsg);
+                
+                // Add the sent message to local state so it displays
+                setReceivedMessages(
+                  produce((draft) => {
+                    (draft[id] ||= []).push(formattedMsg);
+                  })
+                );
               }
             });
-
+          
             setBroadcastMessage('');
           }}
         />
