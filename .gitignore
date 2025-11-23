@@ -5,5 +5,5 @@ example/ios/Pods
 ios/build/
 *.log
 .DS_Store
-ios/MultipeerConnectivityExample.xcodeproj/project.pbxproj
-ios/MultipeerConnectivityExample.xcworkspace/xcuserdata/amrit.xcuserdatad/UserInterfaceState.xcuserstate
+example/ios/MultipeerConnectivityExample.xcodeproj/project.pbxproj
+example/ios/MultipeerConnectivityExample.xcworkspace/xcuserdata/amrit.xcuserdatad/UserInterfaceState.xcuserstate
