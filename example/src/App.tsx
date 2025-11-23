@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect } from 'react';
 import {
   Button,
   Pressable,
@@ -8,8 +8,6 @@ import {
   TextInput,
   View,
   Switch,
-  Alert,
-  ScrollView,
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
@@ -25,17 +23,24 @@ export default function App() {
   const [peerID, setPeerID] = useState('');
   const [isBrowsing, setIsBrowsing] = useState(false);
   const [isAdvertising, setIsAdvertising] = useState(false);
-  const [peers, setPeers] = useState({});
-  const [receivedMessages, setReceivedMessages] = useState({});
-  const [session, setSession] = useState(null);
+  const [peers, setPeers] = useState<
+    Record<
+      string,
+      { state: PeerState; peer: RNPeer; discoveryInfo?: Record<string, string> }
+    >
+  >({});
+  const [receivedMessages, setReceivedMessages] = useState<
+    Record<string, string[]>
+  >({});
+  const [session, setSession] = useState<null | ReturnType<typeof initSession>>(
+    null
+  );
 
-  const [knownGraph, setKnownGraph] = useState({}); // neighbor info
-  const seenMessageIdsRef = useRef(new Set()); // dedupe flood
-  const DEFAULT_TTL = 5;
-
+  // Simple pseudo-unique ID generator
   const generateID = () =>
     Date.now().toString(36) + Math.random().toString(36).substring(2, 10);
 
+  // Load or generate persistent ID
   useEffect(() => {
     (async () => {
       let storedID = await AsyncStorage.getItem('persistentPeerID');
@@ -52,208 +57,180 @@ export default function App() {
 
     const r1 = session.onStartAdvertisingError(() => setIsAdvertising(false));
     const r2 = session.onStartBrowsingError(() => setIsBrowsing(false));
-
     const r3 = session.onFoundPeer((ev) => {
-      setPeers((draft) =>
-        produce(draft, (d) => {
-          if (!d[ev.peer.id]) d[ev.peer.id] = { peer: ev.peer, state: PeerState.notConnected, discoveryInfo: ev.discoveryInfo };
-        })
-      );
-      if (ev.discoveryInfo) {
-        setKnownGraph((g) =>
-          produce(g, (draft) => {
-            draft[ev.peer.id] = draft[ev.peer.id] || { displayName: ev.discoveryInfo.myName || ev.peer.displayName, neighbors: [] };
-          })
-        );
-      }
-    });
-
-    const r4 = session.onLostPeer((ev) => {
-      setPeers((draft) =>
-        produce(draft, (d) => {
-          delete d[ev.peer.id];
-        })
-      );
-      setKnownGraph((g) =>
-        produce(g, (draft) => {
-          if (draft[peerID]) draft[peerID].neighbors = (draft[peerID].neighbors || []).filter(n => n !== ev.peer.id);
-        })
-      );
-      broadcastGraphDebounced();
-    });
-
-    const r5 = session.onPeerStateChanged((ev) => {
-      setPeers((draft) =>
-        produce(draft, (d) => {
-          if (d[ev.peer.id]) d[ev.peer.id].state = ev.state;
-          else d[ev.peer.id] = { peer: ev.peer, state: ev.state };
-        })
-      );
-      setKnownGraph((g) =>
-        produce(g, (draft) => {
-          draft[peerID] = draft[peerID] || { displayName, neighbors: [] };
-          if (ev.state === PeerState.connected) {
-            if (!draft[peerID].neighbors.includes(ev.peer.id)) draft[peerID].neighbors.push(ev.peer.id);
-            draft[ev.peer.id] = draft[ev.peer.id] || { displayName: ev.peer.displayName || ev.peer.id, neighbors: [] };
-          } else {
-            draft[peerID].neighbors = (draft[peerID].neighbors || []).filter(n => n !== ev.peer.id);
+      setPeers(
+        produce((draft) => {
+          if (!draft[ev.peer.id]) {
+            draft[ev.peer.id] = {
+              peer: ev.peer,
+              state: PeerState.notConnected,
+              discoveryInfo: ev.discoveryInfo,
+            };
           }
         })
       );
-      broadcastGraphDebounced();
     });
-
+    const r4 = session.onLostPeer((ev) => {
+      setPeers(
+        produce((draft) => {
+          delete draft[ev.peer.id];
+        })
+      );
+    });
+    const r5 = session.onPeerStateChanged((ev) => {
+      setPeers(
+        produce((draft) => {
+          if (draft[ev.peer.id]) draft[ev.peer.id].state = ev.state;
+          else draft[ev.peer.id] = { peer: ev.peer, state: ev.state };
+        })
+      );
+    });
     const r6 = session.onReceivedPeerInvitation((ev) => ev.handler(true));
-
     const r7 = session.onReceivedText((ev) => {
-      let parsed = null;
-      try { parsed = JSON.parse(ev.text); } catch (e) { parsed = null; }
-
-      if (parsed && parsed.type === 'relay') handleRelay(parsed, ev.peer.id);
-      else pushReceived(ev.peer.id, ev.text);
+      setReceivedMessages(
+        produce((draft) => {
+          (draft[ev.peer.id] ||= []).push(ev.text);
+        })
+      );
     });
 
     return () => {
-      try { session.stopAdvertizing(); session.stopBrowsing(); } catch (e) {}
-      r1.remove(); r2.remove(); r3.remove(); r4.remove(); r5.remove(); r6.remove(); r7.remove();
+      session.stopAdvertizing();
+      session.stopBrowsing();
+      r1.remove();
+      r2.remove();
+      r3.remove();
+      r4.remove();
+      r5.remove();
+      r6.remove();
+      r7.remove();
     };
-  }, [session, peerID, displayName]);
-
-  const pushReceived = (fromId, text) => {
-    setReceivedMessages(prev => produce(prev, d => { (d[fromId] ||= []).push(text); }));
-  };
-
-  useEffect(() => {
-    if (!displayName || !persistentID) return;
-    if (session) return;
-
-    const s = initSession({
-      displayName,
-      serviceType: 'demo',
-      discoveryInfo: { myPersistentID: persistentID, myName: displayName, joinAt: Date.now().toString() },
-    });
-
-    setSession(s);
-    setPeerID(s.peerID);
-
-    setKnownGraph((g) => produce(g, d => { d[s.peerID] = d[s.peerID] || { displayName, neighbors: [] }; }));
-  }, [displayName, persistentID]);
-
-  const broadcastGraph = () => {
-    if (!session || !peerID) return;
-    const payload = JSON.stringify({
-      type: 'peerGraph',
-      data: { me: { id: peerID, name: displayName }, neighbors: knownGraph[peerID]?.neighbors || Object.keys(peers).filter(id => peers[id].state === PeerState.connected), knownPeers: knownGraph },
-    });
-    Object.entries(peers).forEach(([id, info]) => { if (info.state === PeerState.connected) session.sendText(id, payload); });
-  };
-
-  const graphBroadcastTimerRef = useRef(null);
-  const broadcastGraphDebounced = () => {
-    if (graphBroadcastTimerRef.current) clearTimeout(graphBroadcastTimerRef.current);
-    graphBroadcastTimerRef.current = setTimeout(() => { broadcastGraph(); graphBroadcastTimerRef.current = null; }, 200);
-  };
-
-  const handleRelay = (msg, fromPeerId) => {
-    if (!msg || !msg.id) return;
-    const seen = seenMessageIdsRef.current;
-    if (seen.has(msg.id)) return;
-    seen.add(msg.id);
-
-    // Only display if dst matches my peerID
-    if (msg.dst === peerID) pushReceived(msg.src || fromPeerId, `[flood-delivered] ${msg.text}`);
-
-    // Forward to all connected neighbors except sender
-    if (msg.ttl > 0) {
-      const forward = { ...msg, ttl: msg.ttl - 1 };
-      Object.entries(peers).forEach(([id, info]) => {
-        if (info.state === PeerState.connected && id !== fromPeerId) {
-          try { session?.sendText(id, JSON.stringify(forward)); } catch (e) {}
-        }
-      });
-    }
-  };
-
-  const sendMultiHop = (targetId, text) => {
-    if (!session || !peerID || !targetId || !text.trim()) return;
-    const msgId = generateID();
-    const msg = { type: 'relay', id: msgId, src: peerID, dst: targetId, ttl: DEFAULT_TTL, text };
-    seenMessageIdsRef.current.add(msgId);
-
-    Object.entries(peers).forEach(([id, info]) => { if (info.state === PeerState.connected) session.sendText(id, JSON.stringify(msg)); });
-    pushReceived(targetId, `(sent, flood) ${text}`);
-  };
-
-  const [mhTarget, setMhTarget] = useState('');
-  const [mhText, setMhText] = useState('');
-  const directTextRef = useRef({});
+  }, [session]);
 
   if (!displayName || !persistentID) {
     return (
       <View style={styles.container}>
-        <Text style={{ fontSize: 20, marginBottom: 8 }}>Enter your display name:</Text>
-        <TextInput style={{ fontSize: 20, borderWidth: 1, padding: 10, width: 320 }} placeholder="display name"
-          onSubmitEditing={(ev) => { const name = ev.nativeEvent.text.trim(); if (!name) return; setDisplayName(name); }}
+        <Text style={{ fontSize: 20, marginBottom: 5 }}>
+          Enter your display name:
+        </Text>
+        <TextInput
+          style={{ fontSize: 30, borderWidth: 1, padding: 10, width: 300 }}
+          placeholder="display name"
+          onSubmitEditing={async (ev) => {
+            const name = ev.nativeEvent.text;
+            setDisplayName(name);
+
+            const s = initSession({
+              displayName: name,
+              serviceType: 'demo',
+              discoveryInfo: {
+                myPersistentID: persistentID,
+                myName: name,
+                joinAt: Date.now().toString(),
+              },
+            });
+
+            setSession(s);
+            setPeerID(s.peerID);
+          }}
         />
       </View>
     );
   }
 
   return (
-    <ScrollView contentContainerStyle={styles.container}>
-      <Text style={{ fontSize: 16, marginBottom: 6 }}>You: {displayName}</Text>
-      <Text style={{ fontSize: 12, marginBottom: 12 }}>persistentID: {persistentID}</Text>
+    <View style={styles.container}>
+      <Text style={{ fontSize: 16, marginBottom: 10 }}>
+        my persistent ID: {persistentID}
+      </Text>
 
-      <View style={{ marginVertical: 12 }}>
-        <View style={styles.toggleRow}><Text>Browsing</Text>
-          <Switch value={isBrowsing} onValueChange={(v) => { setIsBrowsing(v); v ? session?.browse() : session?.stopBrowsing(); }} />
+      <View style={{ marginVertical: 20 }}>
+        <View style={styles.toggleRow}>
+          <Text>Browsing</Text>
+          <Switch
+            value={isBrowsing}
+            onValueChange={(v) => {
+              setIsBrowsing(v);
+              v ? session?.browse() : session?.stopBrowsing();
+            }}
+          />
         </View>
-        <View style={styles.toggleRow}><Text>Advertising</Text>
-          <Switch value={isAdvertising} onValueChange={(v) => { setIsAdvertising(v); v ? session?.advertize() : session?.stopAdvertizing(); }} />
+        <View style={styles.toggleRow}>
+          <Text>Advertising</Text>
+          <Switch
+            value={isAdvertising}
+            onValueChange={(v) => {
+              setIsAdvertising(v);
+              v ? session?.advertize() : session?.stopAdvertizing();
+            }}
+          />
         </View>
       </View>
 
-      <Button title="Disconnect" onPress={() => { session?.disconnect(); setPeers({}); setKnownGraph((g) => produce(g, d => { if (d[peerID]) d[peerID].neighbors = []; })); }} />
+      <Button
+        title="Disconnect"
+        onPress={() => {
+          session?.disconnect();
+          setPeers({});
+        }}
+      />
 
-      <View style={{ marginTop: 18, width: '92%' }}>
-        <Text style={{ fontWeight: '700' }}>Found peers (direct)</Text>
-        {Object.entries(peers).length === 0 && <Text style={{ fontStyle: 'italic' }}>none</Text>}
+      <View style={{ marginTop: 30, width: '90%' }}>
+        <Text>Found peers:</Text>
         {Object.entries(peers).map(([id, info]) => (
           <View key={id} style={styles.peerBox}>
-            <Pressable onPress={() => { if (info.state !== PeerState.connected) session?.invite(id); }}>
-              <Text style={{ fontWeight: '600' }}>{info.peer.displayName || id}</Text>
-              <Text style={{ fontSize: 12, color: '#444' }}>{id} - {info.state}</Text>
+            <Pressable
+              onPress={() => {
+                if (info.state !== PeerState.connected) session?.invite(id);
+              }}
+            >
+              <Text>
+                {id} - {info.state}
+              </Text>
+              <Text>displayName: {info.peer.displayName}</Text>
+              <Text>persistentID: {info.discoveryInfo?.myPersistentID}</Text>
             </Pressable>
+
             {info.state === PeerState.connected && (
-              <View style={{ marginTop: 6 }}>
-                <TextInput style={{ borderWidth: 1, marginTop: 5, padding: 8 }} placeholder="direct message"
-                  onChangeText={(t) => (directTextRef.current[id] = t)} defaultValue={directTextRef.current[id] || ''} />
-                <Button title="Send direct" onPress={() => { const t = directTextRef.current[id] || ''; if (!t.trim()) return; session.sendText(id, t); pushReceived(id, `(direct) ${t}`); directTextRef.current[id] = ''; }} />
-              </View>
+              <TextInput
+                style={{ borderWidth: 1, marginTop: 5 }}
+                placeholder="send a message"
+                onSubmitEditing={(ev) => {
+                  if (ev.nativeEvent.text.trim())
+                    session?.sendText(id, ev.nativeEvent.text);
+                }}
+              />
             )}
+
             {receivedMessages[id] && (
               <View style={{ marginTop: 10 }}>
-                <Text style={{ fontWeight: '600' }}>Received from {id}:</Text>
-                {receivedMessages[id].map((msg, idx) => <Text key={idx}>{msg}</Text>)}
+                <Text>Received messages:</Text>
+                {receivedMessages[id].map((msg, idx) => (
+                  <Text key={idx}>{msg}</Text>
+                ))}
               </View>
             )}
           </View>
         ))}
       </View>
-
-      <View style={{ marginTop: 18, width: '92%' }}>
-        <Text style={{ fontWeight: '700' }}>Send multi-hop message (flood)</Text>
-        <Text style={{ fontSize: 12, marginBottom: 6 }}>Target UUID: {mhTarget || '(choose from peers)'}</Text>
-        <TextInput placeholder="target UUID" style={{ borderWidth: 1, padding: 8, marginBottom: 6 }} value={mhTarget} onChangeText={setMhTarget} />
-        <TextInput placeholder="message" style={{ borderWidth: 1, padding: 8, marginBottom: 6 }} value={mhText} onChangeText={setMhText} />
-        <Button title="Send (multi-hop flood)" onPress={() => { if (!mhTarget || !mhText.trim()) return; sendMultiHop(mhTarget, mhText); setMhText(''); }} />
-      </View>
-    </ScrollView>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { paddingTop: 80, alignItems: 'center', justifyContent: 'flex-start', backgroundColor: 'white', paddingBottom: 80 },
-  toggleRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', width: 200, marginVertical: 10 },
-  peerBox: { borderWidth: 1, padding: 8, marginVertical: 10, width: '100%' },
+  container: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'flex-start',
+    paddingTop: 80,
+    backgroundColor: 'white',
+  },
+  toggleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    width: 200,
+    marginVertical: 10,
+  },
+  peerBox: { borderWidth: 1, padding: 8, marginVertical: 10 },
 });
