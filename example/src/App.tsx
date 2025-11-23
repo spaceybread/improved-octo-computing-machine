@@ -9,6 +9,8 @@ import {
   TextInput,
   View,
   Switch,
+  Keyboard,
+  TouchableWithoutFeedback
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
@@ -25,6 +27,8 @@ export default function App() {
   const [persistentID, setPersistentID] = useState('');
   const [peerID, setPeerID] = useState('');
   const [broadcastMessage, setBroadcastMessage] = useState('');
+  const [relayTargetId, setRelayTargetId] = useState('');
+  const [relayMessage, setRelayMessage] = useState('');
   const [isBrowsing, setIsBrowsing] = useState(false);
   const [isAdvertising, setIsAdvertising] = useState(false);
   const [devLogs, setDevLogs] = useState([]);
@@ -46,17 +50,16 @@ export default function App() {
   const sendMessage = (msg, isBroadcast, targetId = null, skip = null) => {
     if (!msg || !session) return;
 
-    // Format based on broadcast flag
     const text = isBroadcast ? `[BR] ${msg}` : msg;
     addLog(`sendMessage: ${text}`);
 
+    // Broadcast
     if (isBroadcast) {
-      // send to all connected peers
       Object.keys(peers).forEach((id) => {
         if (peers[id].state === PeerState.connected) {
           session.sendText(id, text);
 
-          setReceivedMessages(draft => {
+          setReceivedMessages((draft) => {
             (draft[id] ||= []).push(text);
             return draft;
           });
@@ -65,7 +68,13 @@ export default function App() {
       return;
     }
 
-    // direct message
+    // Apply skip logic only to direct messages
+    if (skip && targetId === skip) {
+      addLog(`sendMessage skipped direct message to ${targetId}`);
+      return;
+    }
+
+    // Direct message
     if (!targetId) {
       addLog("sendMessage error: Missing targetId for direct message");
       return;
@@ -73,12 +82,13 @@ export default function App() {
 
     session.sendText(targetId, text);
 
-    setReceivedMessages(draft => {
+    setReceivedMessages((draft) => {
       (draft[targetId] ||= []).push(text);
       return draft;
     });
   };
-  
+
+
   // Simple pseudo-unique ID generator
   const generateID = () =>
     Date.now().toString(36) + Math.random().toString(36).substring(2, 10);
@@ -121,7 +131,7 @@ export default function App() {
         })
       );
     });
-    
+
     const r4 = session.onLostPeer((ev) => {
       setPeers(
         produce((draft) => {
@@ -136,7 +146,7 @@ export default function App() {
           else draft[ev.peer.id] = { peer: ev.peer, state: ev.state };
         })
       );
-    
+
       // Retry invitation if not connected
       if (ev.state !== PeerState.connected) {
         const retryInvite = (attempts = 0) => {
@@ -152,22 +162,22 @@ export default function App() {
         retryInvite();
       }
     });
-    
+
 
     const r6 = session.onReceivedPeerInvitation((ev) => ev.handler(true));
     const r7 = session.onReceivedText((ev) => {
-    let msg = ev.text; 
+      let msg = ev.text;
 
       addLog(ev.text);
       addLog(ev.peer.id);
       addLog("==========")
-    
+
       setReceivedMessages(
         produce((draft) => {
           (draft[ev.peer.id] ||= []).push(msg);
         })
       );
-    
+
       // Relay broadcast messages
       if (msg.startsWith('[BR]')) {
         // strip the broadcast prefix before re-sending
@@ -221,6 +231,7 @@ export default function App() {
   }
 
   return (
+  <TouchableWithoutFeedback onPress={Keyboard.dismiss} accessible={false}>
     <View style={styles.container}>
       <Text style={{ fontSize: 16, marginBottom: 10 }}>
         my persistent ID: {persistentID}
@@ -249,8 +260,9 @@ export default function App() {
           setPeers({});
         }}
       />
-{/* Broadcast section */}
-<View style={{ marginTop: 20, width: '90%' }}>
+
+      {/* Broadcast section */}
+      <View style={{ marginTop: 20, width: '90%' }}>
         <Text>Broadcast message to all peers:</Text>
         <TextInput
           style={{ borderWidth: 1, padding: 5, marginTop: 5 }}
@@ -260,9 +272,9 @@ export default function App() {
           onSubmitEditing={() => {
             const msg = broadcastMessage.trim();
             if (!msg) return;
-          
+
             const formattedMsg = "[BR] " + msg;
-          
+
             Object.keys(peers).forEach((id) => {
               if (peers[id].state === PeerState.connected) {
                 sendMessage(formattedMsg, true);
@@ -274,7 +286,7 @@ export default function App() {
                 );
               }
             });
-          
+
             setBroadcastMessage('');
           }}
         />
@@ -298,33 +310,71 @@ export default function App() {
             </Pressable>
 
             {info.state === PeerState.connected && (
-            <>
-              <TextInput
-                style={{ borderWidth: 1, marginTop: 5 }}
-                placeholder="send a message"
-                onSubmitEditing={(ev) => {
-                  if (ev.nativeEvent.text.trim())
-                    session?.sendText(id, ev.nativeEvent.text);
-                }}
-              />
+              <>
+                <TextInput
+                  style={{ borderWidth: 1, marginTop: 5 }}
+                  placeholder="send a message"
+                  onSubmitEditing={(ev) => {
+                    const msg = ev.nativeEvent.text.trim();
+                    if (msg) sendMessage(msg, false, id);
+                  }}
+                />
 
-              <View style={{ marginTop: 10 }}>
-                <Text>Message History:</Text>
-                {receivedMessages[id] && receivedMessages[id].map((msg, idx) => (
-                  <Text key={idx}>{msg}</Text>
-                ))}
-              </View>
-            </>
-          )}
+
+                <View style={{ marginTop: 10 }}>
+                  <Text>Message History:</Text>
+                  {receivedMessages[id] && receivedMessages[id].map((msg, idx) => (
+                    <Text key={idx}>{msg}</Text>
+                  ))}
+                </View>
+              </>
+            )}
           </View>
         ))}
       </View>
-              <ScrollView>
+
+      {/* Relay message section */}
+      <View style={{ marginTop: 30, width: '90%' }}>
+        <Text>Send message through neighbors:</Text>
+        
+        <TextInput
+          style={{ borderWidth: 1, marginTop: 5, padding: 5 }}
+          placeholder="Enter target peer ID"
+          value={relayTargetId}
+          onChangeText={setRelayTargetId}
+        />
+
+        <TextInput
+          style={{ borderWidth: 1, marginTop: 5, padding: 5 }}
+          placeholder="Enter message"
+          value={relayMessage}
+          onChangeText={setRelayMessage}
+          onSubmitEditing={() => {
+            const msg = relayMessage.trim();
+            if (!msg || !relayTargetId) return;
+
+            // Send message to all neighbors except target
+            Object.keys(peers).forEach((id) => {
+              if (peers[id].state === PeerState.connected) {
+                sendMessage(msg, false, id, relayTargetId);
+              }
+            });
+
+            addLog(`Relay message sent to neighbors for target ${relayTargetId}`);
+            setRelayMessage('');
+          }}
+        />
+      </View>
+
+
+      {/* DEBUG VIEW */}
+      <ScrollView>
         {devLogs.map((l, i) => (
           <Text key={i}>{l}</Text>
         ))}
       </ScrollView>
-    </View>
+     </View>
+    </TouchableWithoutFeedback>
   );
 }
 
