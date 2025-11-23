@@ -43,6 +43,11 @@ export default function App() {
   const [receivedMessages, setReceivedMessages] = useState({});
   const [session, setSession] = useState(null);
 
+    const peersRef = React.useRef(peers);
+      useEffect(() => {
+        peersRef.current = peers;
+      }, [peers]);
+
   // UI State
   const [broadcastInput, setBroadcastInput] = useState('');
   const [distantRecipient, setDistantRecipient] = useState('');
@@ -75,12 +80,13 @@ export default function App() {
       addLog(`Sending ${message.signal} to ${targetPeerId}`);
       session.sendText(targetPeerId, serialized);
     } else {
-      Object.keys(peers).forEach((id) => {
-        if (peers[id].state === PeerState.connected) {
-          addLog(`Sending ${message.signal} to ${id}`);
-          session.sendText(id, serialized);
-        }
-      });
+    Object.keys(peersRef.current).forEach((id) => {
+  const info = peersRef.current[id];
+  if (info.state === PeerState.connected && !message.visited.includes(info.discoveryInfo?.myPersistentID || '')) {
+    sendMessage(message, id);
+  }
+});
+
     }
   };
 
@@ -304,11 +310,13 @@ export default function App() {
     switch (message.signal) {
       case MessageSignal.BROADCAST:
         addLog(`Rebroadcasting to all neighbors except ${senderId}`);
-        Object.keys(peers).forEach((id) => {
-          if (peers[id].state === PeerState.connected && id !== senderId) {
-            sendMessage(updatedMessage, id);
-          }
-        });
+        Object.keys(peersRef.current).forEach((id) => {
+  const info = peersRef.current[id];
+  if (info.state === PeerState.connected && !message.visited.includes(info.discoveryInfo?.myPersistentID || '')) {
+    sendMessage(message, id);
+  }
+});
+
         break;
 
       case MessageSignal.NEIGHBOR:
@@ -357,16 +365,13 @@ export default function App() {
     addLog(`Broadcasting: ${content}`);
     sendMessage(message);
     
-    Object.keys(peers).forEach((id) => {
-      if (peers[id].state === PeerState.connected) {
-        setReceivedMessages(
-          produce((draft) => {
-            if (!draft[id]) draft[id] = [];
-            draft[id].push(`[BROADCAST] ${content} (from: me)`);
-          })
-        );
-      }
-    });
+  Object.keys(peersRef.current).forEach((id) => {
+  const info = peersRef.current[id];
+  if (info.state === PeerState.connected && !message.visited.includes(info.discoveryInfo?.myPersistentID || '')) {
+    sendMessage(message, id);
+  }
+});
+
   };
 
   const sendNeighborMessage = (neighborPeerId, content) => {
@@ -435,81 +440,91 @@ export default function App() {
     })();
   }, []);
 
-  useEffect(() => {
-    if (!session) return;
+useEffect(() => {
+  if (!session) return;
 
-    const r1 = session.onStartAdvertisingError(() => {
-      setIsAdvertising(false);
-      addLog('Advertising error');
+  const r1 = session.onStartAdvertisingError(() => setIsAdvertising(false));
+  const r2 = session.onStartBrowsingError(() => setIsBrowsing(false));
+
+  const r3 = session.onFoundPeer((ev) => {
+    setPeers(
+      produce((draft) => {
+        if (!draft[ev.peer.id]) {
+          draft[ev.peer.id] = {
+            peer: ev.peer,
+            state: PeerState.notConnected,
+            discoveryInfo: ev.discoveryInfo,
+          };
+          session?.invite(ev.peer.id); // invite immediately
+        }
+      })
+    );
+  });
+
+  const r4 = session.onLostPeer((ev) => {
+    setPeers((draft) => {
+      const newDraft = { ...draft };
+      delete newDraft[ev.peer.id];
+      return newDraft;
     });
+  });
 
-    const r2 = session.onStartBrowsingError(() => {
-      setIsBrowsing(false);
-      addLog('Browsing error');
-    });
+  const r5 = session.onPeerStateChanged((ev) => {
+    setPeers((draft) =>
+      produce(draft, (d) => {
+        if (d[ev.peer.id]) d[ev.peer.id].state = ev.state;
+        else d[ev.peer.id] = { peer: ev.peer, state: ev.state };
+      })
+    );
 
-    const r3 = session.onFoundPeer((ev) => {
-      addLog(`Found: ${ev.peer.displayName}`);
-      setPeers(
-        produce((draft) => {
-          if (!draft[ev.peer.id]) {
-            draft[ev.peer.id] = {
-              peer: ev.peer,
-              state: PeerState.notConnected,
-              discoveryInfo: ev.discoveryInfo,
-            };
-            session?.invite(ev.peer.id);
-          }
-        })
-      );
-    });
+    // Retry only if state is NOT connected
+    if (ev.state !== PeerState.connected && ev.state !== PeerState.connecting) {
+      let attempts = 0;
+      const retry = () => {
+        if (attempts >= 10) return;
+        if (ev.state === PeerState.connected) return; // stop retrying if already connected
+        attempts++;
+        session?.invite(ev.peer.id);
+        setTimeout(retry, 1000);
+      };
+      retry();
+    }
+  });
 
-    const r4 = session.onLostPeer((ev) => {
-      addLog(`Lost: ${ev.peer.displayName}`);
-      setPeers(
-        produce((draft) => {
-          delete draft[ev.peer.id];
-        })
-      );
-    });
+  const r6 = session.onReceivedPeerInvitation((ev) => ev.handler(true));
 
-    const r5 = session.onPeerStateChanged((ev) => {
-      addLog(`${ev.peer.displayName} state: ${ev.state}`);
-      setPeers(
-        produce((draft) => {
-          if (draft[ev.peer.id]) {
-            draft[ev.peer.id].state = ev.state;
-          } else {
-            draft[ev.peer.id] = { peer: ev.peer, state: ev.state };
-          }
-        })
-      );
-    });
+  const r7 = session.onReceivedText((ev) => {
+    const msg = ev.text;
+    setReceivedMessages((draft) =>
+      produce(draft, (d) => {
+        (d[ev.peer.id] ||= []).push(msg);
+      })
+    );
 
-    const r6 = session.onReceivedPeerInvitation((ev) => {
-      addLog(`Invitation from: ${ev.peer.displayName}`);
-      ev.handler(true);
-    });
+    // rebroadcast broadcast messages
+    if (msg.startsWith('[BR]')) {
+      Object.keys(peersRef.current).forEach((id) => {
+        const p = peersRef.current[id];
+        if (id !== ev.peer.id && p.state === PeerState.connected) {
+          session?.sendText(id, msg);
+        }
+      });
+    }
+  });
 
-    const r7 = session.onReceivedText((ev) => {
-      const message = deserializeMessage(ev.text);
-      if (message) {
-        receiveMessage(ev.peer.id, message);
-      }
-    });
+  return () => {
+    session.stopAdvertizing();
+    session.stopBrowsing();
+    r1.remove();
+    r2.remove();
+    r3.remove();
+    r4.remove();
+    r5.remove();
+    r6.remove();
+    r7.remove();
+  };
+}, [session]);
 
-    return () => {
-      session.stopAdvertizing();
-      session.stopBrowsing();
-      r1.remove();
-      r2.remove();
-      r3.remove();
-      r4.remove();
-      r5.remove();
-      r6.remove();
-      r7.remove();
-    };
-  }, [session, peers, persistentID]);
 
   if (!displayName || !persistentID) {
     return (
