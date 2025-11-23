@@ -18,12 +18,17 @@ import {
   RNPeer,
 } from 'react-native-multipeer-connectivity';
 import { produce } from 'immer';
+import RNFS from 'react-native-fs';
+import DocumentPicker from 'react-native-document-picker';
 
 // Message Protocol
 const MessageSignal = {
   BROADCAST: 'BROADCAST',
   NEIGHBOR: 'NEIGHBOR',
-  DISTANT: 'DISTANT'
+  DISTANT: 'DISTANT',
+  FILE_CHUNK: 'FILE_CHUNK',
+  FILE_START: 'FILE_START',
+  FILE_END: 'FILE_END'
 };
 
 export default function App() {
@@ -41,6 +46,10 @@ export default function App() {
   const [broadcastInput, setBroadcastInput] = useState('');
   const [distantRecipient, setDistantRecipient] = useState('');
   const [distantMessageInput, setDistantMessageInput] = useState('');
+
+  // File transfer state
+  const [fileTransfers, setFileTransfers] = useState({});
+  const [sendingProgress, setSendingProgress] = useState({});
 
   const addLog = (msg) => {
     console.log(msg);
@@ -74,6 +83,122 @@ export default function App() {
     }
   };
 
+  const chunkBase64 = (base64String, chunkSize = 4000) => {
+    const chunks = [];
+    for (let i = 0; i < base64String.length; i += chunkSize) {
+      chunks.push(base64String.slice(i, i + chunkSize));
+    }
+    return chunks;
+  };
+
+  const stitchBase64 = async (chunks, fileExtension, fileName) => {
+    if (!chunks || chunks.length === 0) return;
+
+    const base64String = chunks.join("");
+
+    try {
+      const destPath = RNFS.DocumentDirectoryPath;
+      const finalFileName = fileName || `received_file_${Date.now()}.${fileExtension}`;
+      const filePath = `${destPath}/${finalFileName}`;
+
+      await RNFS.writeFile(filePath, base64String, "base64");
+
+      addLog(`File reconstructed and saved at: ${filePath}`);
+      return filePath;
+    } catch (err) {
+      addLog(`Failed to save file: ${err}`);
+    }
+  };
+
+  const pickAndSendFile = async (targetPeerId) => {
+    try {
+      const res = await DocumentPicker.pickSingle({
+        type: [DocumentPicker.types.allFiles],
+      });
+
+      let filePath = res.uri;
+      if (filePath.startsWith("file://")) filePath = filePath.slice(7);
+
+      const base64 = await RNFS.readFile(filePath, "base64");
+      const chunks = chunkBase64(base64, 4000);
+      
+      // Extract file extension
+      const fileExtension = res.name.split('.').pop() || 'dat';
+      const fileId = generateID();
+
+      addLog(`Sending file: ${res.name} (${chunks.length} chunks)`);
+
+      // Send FILE_START
+      sendMessage({
+        signal: MessageSignal.FILE_START,
+        parameters: {
+          sender: persistentID,
+          fileId,
+          fileName: res.name,
+          fileExtension,
+          totalChunks: chunks.length
+        },
+        content: `Starting file transfer: ${res.name}`,
+        visited: [persistentID]
+      }, targetPeerId);
+
+      // Initialize sending progress
+      setSendingProgress(prev => ({
+        ...prev,
+        [fileId]: { current: 0, total: chunks.length, fileName: res.name }
+      }));
+
+      // Send chunks with delay
+      for (let i = 0; i < chunks.length; i++) {
+        await new Promise(resolve => setTimeout(resolve, 50)); // Small delay between chunks
+        
+        sendMessage({
+          signal: MessageSignal.FILE_CHUNK,
+          parameters: {
+            sender: persistentID,
+            fileId,
+            chunkIndex: i,
+            totalChunks: chunks.length
+          },
+          content: chunks[i],
+          visited: [persistentID]
+        }, targetPeerId);
+
+        setSendingProgress(prev => ({
+          ...prev,
+          [fileId]: { ...prev[fileId], current: i + 1 }
+        }));
+      }
+
+      // Send FILE_END
+      sendMessage({
+        signal: MessageSignal.FILE_END,
+        parameters: {
+          sender: persistentID,
+          fileId
+        },
+        content: `File transfer complete: ${res.name}`,
+        visited: [persistentID]
+      }, targetPeerId);
+
+      addLog(`File sent successfully: ${res.name}`);
+      
+      // Clear progress after a delay
+      setTimeout(() => {
+        setSendingProgress(prev => {
+          const newProgress = { ...prev };
+          delete newProgress[fileId];
+          return newProgress;
+        });
+      }, 3000);
+
+    } catch (err) {
+      if (!DocumentPicker.isCancel(err)) {
+        addLog(`Error picking file: ${err}`);
+      }
+    }
+  };
+
   const receiveMessage = (senderId, message) => {
     if (!message || !message.signal || !message.content) {
       addLog(`Invalid message from ${senderId}`);
@@ -96,6 +221,70 @@ export default function App() {
 
     if (!updatedMessage.parameters) updatedMessage.parameters = {};
 
+    // Handle file transfer messages
+    if (message.signal === MessageSignal.FILE_START) {
+      const { fileId, fileName, fileExtension, totalChunks } = message.parameters;
+      setFileTransfers(prev => ({
+        ...prev,
+        [fileId]: {
+          fileName,
+          fileExtension,
+          totalChunks,
+          chunks: [],
+          receivedChunks: 0
+        }
+      }));
+      addLog(`📥 Receiving file: ${fileName} (${totalChunks} chunks)`);
+      return;
+    }
+
+    if (message.signal === MessageSignal.FILE_CHUNK) {
+      const { fileId, chunkIndex, totalChunks } = message.parameters;
+      setFileTransfers(prev => {
+        const transfer = prev[fileId];
+        if (!transfer) return prev;
+
+        const newChunks = [...transfer.chunks];
+        newChunks[chunkIndex] = message.content;
+
+        return {
+          ...prev,
+          [fileId]: {
+            ...transfer,
+            chunks: newChunks,
+            receivedChunks: transfer.receivedChunks + 1
+          }
+        };
+      });
+      return;
+    }
+
+    if (message.signal === MessageSignal.FILE_END) {
+      const { fileId } = message.parameters;
+      setFileTransfers(prev => {
+        const transfer = prev[fileId];
+        if (!transfer) return prev;
+
+        // Stitch the file
+        stitchBase64(transfer.chunks, transfer.fileExtension, transfer.fileName);
+        
+        addLog(`✅ File received: ${transfer.fileName}`);
+
+        // Remove from transfers after a delay
+        setTimeout(() => {
+          setFileTransfers(current => {
+            const newTransfers = { ...current };
+            delete newTransfers[fileId];
+            return newTransfers;
+          });
+        }, 3000);
+
+        return prev;
+      });
+      return;
+    }
+
+    // Regular message handling
     const displayText = `[${message.signal}] ${message.content} (from: ${message.parameters.sender || 'unknown'})`;
     setReceivedMessages(
       produce((draft) => {
@@ -212,7 +401,6 @@ export default function App() {
 
     addLog(`Sending distant message to ${recipientPersistentId}`);
     
-    // Skip direct recipient to force propagation
     Object.entries(peers).forEach(([id, info]) => {
       if (info.discoveryInfo?.myPersistentID === recipientPersistentId) {
         addLog(`Skipping direct recipient ${id}`);
@@ -239,7 +427,6 @@ export default function App() {
     })();
   }, []);
 
-  // ORIGINAL WORKING CONNECTION LOGIC
   useEffect(() => {
     if (!session) return;
 
@@ -263,7 +450,6 @@ export default function App() {
               state: PeerState.notConnected,
               discoveryInfo: ev.discoveryInfo,
             };
-            // Auto-invite
             session?.invite(ev.peer.id);
           }
         })
@@ -279,19 +465,18 @@ export default function App() {
       );
     });
 
-const r5 = session.onPeerStateChanged((ev) => {
-  addLog(`${ev.peer.displayName} state: ${ev.state}`);
-  setPeers(
-    produce((draft) => {
-      if (draft[ev.peer.id]) {
-        draft[ev.peer.id].state = ev.state;
-      } else {
-        draft[ev.peer.id] = { peer: ev.peer, state: ev.state };
-      }
-    })
-  );
-  // Remove the retry logic entirely
-});
+    const r5 = session.onPeerStateChanged((ev) => {
+      addLog(`${ev.peer.displayName} state: ${ev.state}`);
+      setPeers(
+        produce((draft) => {
+          if (draft[ev.peer.id]) {
+            draft[ev.peer.id].state = ev.state;
+          } else {
+            draft[ev.peer.id] = { peer: ev.peer, state: ev.state };
+          }
+        })
+      );
+    });
 
     const r6 = session.onReceivedPeerInvitation((ev) => {
       addLog(`Invitation from: ${ev.peer.displayName}`);
@@ -316,7 +501,7 @@ const r5 = session.onPeerStateChanged((ev) => {
       r6.remove();
       r7.remove();
     };
-  }, [session]);
+  }, [session, peers, persistentID]);
 
   if (!displayName || !persistentID) {
     return (
@@ -396,6 +581,51 @@ const r5 = session.onPeerStateChanged((ev) => {
             }}
           />
 
+          {/* FILE TRANSFER PROGRESS */}
+          {Object.keys(sendingProgress).length > 0 && (
+            <View style={styles.section}>
+              <Text style={styles.sectionTitle}>📤 Sending Files</Text>
+              {Object.entries(sendingProgress).map(([fileId, progress]) => (
+                <View key={fileId} style={styles.progressBox}>
+                  <Text style={{ fontSize: 12 }}>{progress.fileName}</Text>
+                  <View style={styles.progressBarContainer}>
+                    <View 
+                      style={[
+                        styles.progressBar, 
+                        { width: `${(progress.current / progress.total) * 100}%` }
+                      ]} 
+                    />
+                  </View>
+                  <Text style={{ fontSize: 10, color: 'gray' }}>
+                    {progress.current} / {progress.total} chunks
+                  </Text>
+                </View>
+              ))}
+            </View>
+          )}
+
+          {Object.keys(fileTransfers).length > 0 && (
+            <View style={styles.section}>
+              <Text style={styles.sectionTitle}>📥 Receiving Files</Text>
+              {Object.entries(fileTransfers).map(([fileId, transfer]) => (
+                <View key={fileId} style={styles.progressBox}>
+                  <Text style={{ fontSize: 12 }}>{transfer.fileName}</Text>
+                  <View style={styles.progressBarContainer}>
+                    <View 
+                      style={[
+                        styles.progressBar, 
+                        { width: `${(transfer.receivedChunks / transfer.totalChunks) * 100}%` }
+                      ]} 
+                    />
+                  </View>
+                  <Text style={{ fontSize: 10, color: 'gray' }}>
+                    {transfer.receivedChunks} / {transfer.totalChunks} chunks
+                  </Text>
+                </View>
+              ))}
+            </View>
+          )}
+
           {/* BROADCAST */}
           <View style={styles.section}>
             <Text style={styles.sectionTitle}>📢 Broadcast</Text>
@@ -458,6 +688,11 @@ const r5 = session.onPeerStateChanged((ev) => {
 
                 {info.state === PeerState.connected && (
                   <>
+                    <Button
+                      title="📎 Send File"
+                      onPress={() => pickAndSendFile(id)}
+                    />
+
                     <TextInput
                       style={styles.input}
                       placeholder="Direct message"
@@ -537,5 +772,24 @@ const styles = StyleSheet.create({
     marginVertical: 5,
     borderRadius: 5,
     backgroundColor: '#f9f9f9',
+  },
+  progressBox: {
+    padding: 10,
+    marginVertical: 5,
+    borderWidth: 1,
+    borderColor: '#e0e0e0',
+    borderRadius: 5,
+    backgroundColor: '#f5f5f5',
+  },
+  progressBarContainer: {
+    height: 20,
+    backgroundColor: '#e0e0e0',
+    borderRadius: 10,
+    marginVertical: 5,
+    overflow: 'hidden',
+  },
+  progressBar: {
+    height: '100%',
+    backgroundColor: '#4CAF50',
   },
 });
