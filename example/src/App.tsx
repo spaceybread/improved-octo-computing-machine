@@ -279,29 +279,19 @@ export default function App() {
       );
     });
 
-    const r5 = session.onPeerStateChanged((ev) => {
-      addLog(`${ev.peer.displayName} state: ${ev.state}`);
-      setPeers(
-        produce((draft) => {
-          if (draft[ev.peer.id]) {
-            draft[ev.peer.id].state = ev.state;
-          } else {
-            draft[ev.peer.id] = { peer: ev.peer, state: ev.state };
-          }
-        })
-      );
-
-      // Retry if not connected
-      if (ev.state !== PeerState.connected) {
-        const retryInvite = (attempts = 0) => {
-          if (session && peers[ev.peer.id]?.state !== PeerState.connected && attempts < 10) {
-            session.invite(ev.peer.id);
-            setTimeout(() => retryInvite(attempts + 1), 1000);
-          }
-        };
-        retryInvite();
+const r5 = session.onPeerStateChanged((ev) => {
+  addLog(`${ev.peer.displayName} state: ${ev.state}`);
+  setPeers(
+    produce((draft) => {
+      if (draft[ev.peer.id]) {
+        draft[ev.peer.id].state = ev.state;
+      } else {
+        draft[ev.peer.id] = { peer: ev.peer, state: ev.state };
       }
-    });
+    })
+  );
+  // Remove the retry logic entirely
+});
 
     const r6 = session.onReceivedPeerInvitation((ev) => {
       addLog(`Invitation from: ${ev.peer.displayName}`);
