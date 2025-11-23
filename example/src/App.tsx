@@ -95,6 +95,16 @@ export default function App() {
           (draft[ev.peer.id] ||= []).push(ev.text);
         })
       );
+    
+      // Check if this is a broadcast message
+      if (/^\[.*?\]\s/.test(ev.text)) {
+        // Relay it to everyone except the sender
+        Object.keys(peers).forEach((id) => {
+          if (id !== ev.peer.id && peers[id].state === PeerState.connected) {
+            session?.sendText(id, ev.text);
+          }
+        });
+      }
     });
 
     return () => {
@@ -191,7 +201,7 @@ export default function App() {
 
             Object.keys(peers).forEach((id) => {
               if (peers[id].state === PeerState.connected) {
-                session?.sendText(id, "[📣]" + msg);
+                session?.sendText(id, "[📣] " + msg);
               }
             });
 
