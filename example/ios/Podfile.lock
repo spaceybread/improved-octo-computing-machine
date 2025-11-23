@@ -375,6 +375,9 @@ PODS:
   - React-jsinspector (0.72.4)
   - React-logger (0.72.4):
     - glog
+  - react-native-document-picker (9.3.1):
+    - RCT-Folly (= 2021.07.22.00)
+    - React-Core
   - react-native-multipeer-connectivity (0.1.0):
     - RCT-Folly (= 2021.07.22.00)
     - React-Core
@@ -490,6 +493,8 @@ PODS:
     - React-perflogger (= 0.72.4)
   - RNCAsyncStorage (2.2.0):
     - React-Core
+  - RNFS (2.20.0):
+    - React-Core
   - SocketRocket (0.6.1)
   - Yoga (1.14.0)
   - YogaKit (1.18.1):
@@ -541,6 +546,7 @@ DEPENDENCIES:
   - React-jsiexecutor (from `../node_modules/react-native/ReactCommon/jsiexecutor`)
   - React-jsinspector (from `../node_modules/react-native/ReactCommon/jsinspector`)
   - React-logger (from `../node_modules/react-native/ReactCommon/logger`)
+  - react-native-document-picker (from `../node_modules/react-native-document-picker`)
   - react-native-multipeer-connectivity (from `../..`)
   - React-NativeModulesApple (from `../node_modules/react-native/ReactCommon/react/nativemodule/core/platform/ios`)
   - React-perflogger (from `../node_modules/react-native/ReactCommon/reactperflogger`)
@@ -560,6 +566,7 @@ DEPENDENCIES:
   - React-utils (from `../node_modules/react-native/ReactCommon/react/utils`)
   - ReactCommon/turbomodule/core (from `../node_modules/react-native/ReactCommon`)
   - "RNCAsyncStorage (from `../node_modules/@react-native-async-storage/async-storage`)"
+  - RNFS (from `../node_modules/react-native-fs`)
   - Yoga (from `../node_modules/react-native/ReactCommon/yoga`)
 
 SPEC REPOS:
@@ -623,6 +630,8 @@ EXTERNAL SOURCES:
     :path: "../node_modules/react-native/ReactCommon/jsinspector"
   React-logger:
     :path: "../node_modules/react-native/ReactCommon/logger"
+  react-native-document-picker:
+    :path: "../node_modules/react-native-document-picker"
   react-native-multipeer-connectivity:
     :path: "../.."
   React-NativeModulesApple:
@@ -661,6 +670,8 @@ EXTERNAL SOURCES:
     :path: "../node_modules/react-native/ReactCommon"
   RNCAsyncStorage:
     :path: "../node_modules/@react-native-async-storage/async-storage"
+  RNFS:
+    :path: "../node_modules/react-native-fs"
   Yoga:
     :path: "../node_modules/react-native/ReactCommon/yoga"
 
@@ -698,6 +709,7 @@ SPEC CHECKSUMS:
   React-jsiexecutor: bee9fca67c1b8ab7d9cf1c8e19a50968dc15ba2e
   React-jsinspector: aaed4cf551c4a1c98092436518c2d267b13a673f
   React-logger: 005cf0fc175b43fd5a1abca9ad02fc50c5db45d3
+  react-native-document-picker: c586098a24ae21bd44b1bd601e403c2b32854f38
   react-native-multipeer-connectivity: 985d18b1ce09ea3dff328a77f6574d95513df046
   React-NativeModulesApple: 3020a249a8b7c7d7070a1666925e86e9d3f2773e
   React-perflogger: 496a1a3dc6737f964107cb3ddae7f9e265ddda58
@@ -717,6 +729,7 @@ SPEC CHECKSUMS:
   React-utils: 5af1d6c958748398eae8030a2fa08af220f4a2e6
   ReactCommon: 00926ccf1a9b03cc7cfbfb2b838591a0a1b754f1
   RNCAsyncStorage: b44e8a4e798c3e1f56bffccd0f591f674fb9198f
+  RNFS: 89de7d7f4c0f6bafa05343c578f61118c8282ed8
   SocketRocket: f32cd54efbe0f095c4d7594881e52619cfe80b17
   Yoga: 3efc43e0d48686ce2e8c60f99d4e6bd349aff981
   YogaKit: f782866e155069a2cca2517aafea43200b01fd5a
