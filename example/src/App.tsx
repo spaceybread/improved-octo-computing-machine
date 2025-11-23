@@ -21,6 +21,7 @@ export default function App() {
   const [displayName, setDisplayName] = useState('');
   const [persistentID, setPersistentID] = useState('');
   const [peerID, setPeerID] = useState('');
+  const [broadcastMessage, setBroadcastMessage] = useState('');
   const [isBrowsing, setIsBrowsing] = useState(false);
   const [isAdvertising, setIsAdvertising] = useState(false);
   const [peers, setPeers] = useState<
@@ -36,6 +37,8 @@ export default function App() {
     null
   );
 
+
+  
   // Simple pseudo-unique ID generator
   const generateID = () =>
     Date.now().toString(36) + Math.random().toString(36).substring(2, 10);
@@ -174,7 +177,30 @@ export default function App() {
           setPeers({});
         }}
       />
+{/* Broadcast section */}
+<View style={{ marginTop: 20, width: '90%' }}>
+        <Text>Broadcast message to all peers:</Text>
+        <TextInput
+          style={{ borderWidth: 1, padding: 5, marginTop: 5 }}
+          placeholder="Enter broadcast message"
+          value={broadcastMessage}
+          onChangeText={setBroadcastMessage}
+          onSubmitEditing={() => {
+            const msg = broadcastMessage.trim();
+            if (!msg) return;
 
+            Object.keys(peers).forEach((id) => {
+              if (peers[id].state === PeerState.connected) {
+                session?.sendText(id, msg);
+              }
+            });
+
+            setBroadcastMessage('');
+          }}
+        />
+      </View>
+
+      {/* Found peers list */}
       <View style={{ marginTop: 30, width: '90%' }}>
         <Text>Found peers:</Text>
         {Object.entries(peers).map(([id, info]) => (
