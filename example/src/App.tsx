@@ -8,7 +8,6 @@ import {
   ScrollView,
   TextInput,
   View,
-  Switch,
   Keyboard,
   TouchableWithoutFeedback
 } from 'react-native';
@@ -19,81 +18,216 @@ import {
   RNPeer,
 } from 'react-native-multipeer-connectivity';
 import { produce } from 'immer';
-import { Alert } from 'react-native';
 
+// Message Protocol
+const MessageSignal = {
+  BROADCAST: 'BROADCAST',
+  NEIGHBOR: 'NEIGHBOR',
+  DISTANT: 'DISTANT'
+};
 
 export default function App() {
   const [displayName, setDisplayName] = useState('');
   const [persistentID, setPersistentID] = useState('');
   const [peerID, setPeerID] = useState('');
-  const [broadcastMessage, setBroadcastMessage] = useState('');
-  const [relayTargetId, setRelayTargetId] = useState('');
-  const [relayMessage, setRelayMessage] = useState('');
   const [isBrowsing, setIsBrowsing] = useState(false);
   const [isAdvertising, setIsAdvertising] = useState(false);
   const [devLogs, setDevLogs] = useState([]);
-  const [peers, setPeers] = useState<
-    Record<
-      string,
-      { state: PeerState; peer: RNPeer; discoveryInfo?: Record<string, string> }
-    >
-  >({});
-  const [receivedMessages, setReceivedMessages] = useState<
-    Record<string, string[]>
-  >({});
-  const [session, setSession] = useState<null | ReturnType<typeof initSession>>(
-    null
-  );
+  const [peers, setPeers] = useState({});
+  const [receivedMessages, setReceivedMessages] = useState({});
+  const [session, setSession] = useState(null);
 
-  const addLog = (msg) => setDevLogs(l => [...l, msg]);
+  // UI State
+  const [broadcastInput, setBroadcastInput] = useState('');
+  const [distantRecipient, setDistantRecipient] = useState('');
+  const [distantMessageInput, setDistantMessageInput] = useState('');
 
-  const sendMessage = (msg, isBroadcast, targetId = null, skip = null) => {
-    if (!msg || !session) return;
+  const addLog = (msg) => {
+    console.log(msg);
+    setDevLogs(l => [...l, `${new Date().toLocaleTimeString()}: ${msg}`]);
+  };
 
-    const text = isBroadcast ? `[BR] ${msg}` : msg;
-    addLog(`sendMessage: ${text}`);
+  const serializeMessage = (msg) => JSON.stringify(msg);
+  const deserializeMessage = (text) => {
+    try {
+      return JSON.parse(text);
+    } catch (e) {
+      addLog(`Failed to parse: ${text}`);
+      return null;
+    }
+  };
 
-    // Broadcast
-    if (isBroadcast) {
+  const sendMessage = (message, targetPeerId) => {
+    if (!session) return;
+    const serialized = serializeMessage(message);
+    
+    if (targetPeerId) {
+      addLog(`Sending ${message.signal} to ${targetPeerId}`);
+      session.sendText(targetPeerId, serialized);
+    } else {
       Object.keys(peers).forEach((id) => {
         if (peers[id].state === PeerState.connected) {
-          session.sendText(id, text);
-
-          setReceivedMessages((draft) => {
-            (draft[id] ||= []).push(text);
-            return draft;
-          });
+          addLog(`Sending ${message.signal} to ${id}`);
+          session.sendText(id, serialized);
         }
       });
+    }
+  };
+
+  const receiveMessage = (senderId, message) => {
+    if (!message || !message.signal || !message.content) {
+      addLog(`Invalid message from ${senderId}`);
       return;
     }
 
-    // Apply skip logic only to direct messages
-    if (skip && targetId === skip) {
-      addLog(`sendMessage skipped direct message to ${targetId}`);
+    if (!persistentID) return;
+
+    if (!message.visited) message.visited = [];
+
+    if (message.visited.includes(persistentID)) {
+      addLog(`Already saw this message`);
       return;
     }
 
-    // Direct message
-    if (!targetId) {
-      addLog("sendMessage error: Missing targetId for direct message");
-      return;
+    const updatedMessage = {
+      ...message,
+      visited: [...message.visited, persistentID]
+    };
+
+    if (!updatedMessage.parameters) updatedMessage.parameters = {};
+
+    const displayText = `[${message.signal}] ${message.content} (from: ${message.parameters.sender || 'unknown'})`;
+    setReceivedMessages(
+      produce((draft) => {
+        if (!draft[senderId]) draft[senderId] = [];
+        draft[senderId].push(displayText);
+      })
+    );
+
+    switch (message.signal) {
+      case MessageSignal.BROADCAST:
+        addLog(`Rebroadcasting to all neighbors except ${senderId}`);
+        Object.keys(peers).forEach((id) => {
+          if (peers[id].state === PeerState.connected && id !== senderId) {
+            sendMessage(updatedMessage, id);
+          }
+        });
+        break;
+
+      case MessageSignal.NEIGHBOR:
+        if (message.parameters.neighborId === persistentID) {
+          addLog(`Neighbor message for me!`);
+        }
+        break;
+
+      case MessageSignal.DISTANT:
+        if (message.parameters.recipient === persistentID) {
+          addLog(`🎯 DISTANT MESSAGE ARRIVED: ${message.content}`);
+          return;
+        }
+
+        const recipientPeer = Object.entries(peers).find(
+          ([id, info]) => info.discoveryInfo?.myPersistentID === message.parameters.recipient
+        );
+
+        if (recipientPeer && recipientPeer[1].state === PeerState.connected) {
+          addLog(`Forwarding to neighbor ${recipientPeer[0]}`);
+          sendMessage(updatedMessage, recipientPeer[0]);
+        } else {
+          addLog(`Propagating to all neighbors`);
+          Object.entries(peers).forEach(([id, info]) => {
+            if (
+              info.state === PeerState.connected &&
+              id !== senderId &&
+              !message.visited.includes(info.discoveryInfo?.myPersistentID || '')
+            ) {
+              sendMessage(updatedMessage, id);
+            }
+          });
+        }
+        break;
     }
+  };
 
-    session.sendText(targetId, text);
+  const initiateBroadcast = (content) => {
+    const message = {
+      signal: MessageSignal.BROADCAST,
+      parameters: { sender: persistentID },
+      content,
+      visited: [persistentID]
+    };
 
-    setReceivedMessages((draft) => {
-      (draft[targetId] ||= []).push(text);
-      return draft;
+    addLog(`Broadcasting: ${content}`);
+    sendMessage(message);
+    
+    Object.keys(peers).forEach((id) => {
+      if (peers[id].state === PeerState.connected) {
+        setReceivedMessages(
+          produce((draft) => {
+            if (!draft[id]) draft[id] = [];
+            draft[id].push(`[BROADCAST] ${content} (from: me)`);
+          })
+        );
+      }
     });
   };
 
+  const sendNeighborMessage = (neighborPeerId, content) => {
+    const neighborInfo = peers[neighborPeerId];
+    if (!neighborInfo || neighborInfo.state !== PeerState.connected) {
+      addLog(`Peer not connected`);
+      return;
+    }
 
-  // Simple pseudo-unique ID generator
+    const message = {
+      signal: MessageSignal.NEIGHBOR,
+      parameters: {
+        sender: persistentID,
+        neighborId: neighborInfo.discoveryInfo?.myPersistentID
+      },
+      content,
+      visited: [persistentID]
+    };
+
+    sendMessage(message, neighborPeerId);
+    
+    setReceivedMessages(
+      produce((draft) => {
+        if (!draft[neighborPeerId]) draft[neighborPeerId] = [];
+        draft[neighborPeerId].push(`[NEIGHBOR] ${content} (from: me)`);
+      })
+    );
+  };
+
+  const sendDistantMessage = (recipientPersistentId, content) => {
+    const message = {
+      signal: MessageSignal.DISTANT,
+      parameters: {
+        sender: persistentID,
+        recipient: recipientPersistentId
+      },
+      content,
+      visited: [persistentID]
+    };
+
+    addLog(`Sending distant message to ${recipientPersistentId}`);
+    
+    // Skip direct recipient to force propagation
+    Object.entries(peers).forEach(([id, info]) => {
+      if (info.discoveryInfo?.myPersistentID === recipientPersistentId) {
+        addLog(`Skipping direct recipient ${id}`);
+        return;
+      }
+      
+      if (info.state === PeerState.connected) {
+        sendMessage(message, id);
+      }
+    });
+  };
+
   const generateID = () =>
     Date.now().toString(36) + Math.random().toString(36).substring(2, 10);
 
-  // Load or generate persistent ID
   useEffect(() => {
     (async () => {
       let storedID = await AsyncStorage.getItem('persistentPeerID');
@@ -105,18 +239,22 @@ export default function App() {
     })();
   }, []);
 
-  const peersRef = React.useRef(peers);
-
-  useEffect(() => {
-    peersRef.current = peers;
-  }, [peers]);
-
+  // ORIGINAL WORKING CONNECTION LOGIC
   useEffect(() => {
     if (!session) return;
 
-    const r1 = session.onStartAdvertisingError(() => setIsAdvertising(false));
-    const r2 = session.onStartBrowsingError(() => setIsBrowsing(false));
+    const r1 = session.onStartAdvertisingError(() => {
+      setIsAdvertising(false);
+      addLog('Advertising error');
+    });
+
+    const r2 = session.onStartBrowsingError(() => {
+      setIsBrowsing(false);
+      addLog('Browsing error');
+    });
+
     const r3 = session.onFoundPeer((ev) => {
+      addLog(`Found: ${ev.peer.displayName}`);
       setPeers(
         produce((draft) => {
           if (!draft[ev.peer.id]) {
@@ -125,7 +263,7 @@ export default function App() {
               state: PeerState.notConnected,
               discoveryInfo: ev.discoveryInfo,
             };
-            // Immediately invite the peer
+            // Auto-invite
             session?.invite(ev.peer.id);
           }
         })
@@ -133,56 +271,47 @@ export default function App() {
     });
 
     const r4 = session.onLostPeer((ev) => {
+      addLog(`Lost: ${ev.peer.displayName}`);
       setPeers(
         produce((draft) => {
           delete draft[ev.peer.id];
         })
       );
     });
+
     const r5 = session.onPeerStateChanged((ev) => {
+      addLog(`${ev.peer.displayName} state: ${ev.state}`);
       setPeers(
         produce((draft) => {
-          if (draft[ev.peer.id]) draft[ev.peer.id].state = ev.state;
-          else draft[ev.peer.id] = { peer: ev.peer, state: ev.state };
+          if (draft[ev.peer.id]) {
+            draft[ev.peer.id].state = ev.state;
+          } else {
+            draft[ev.peer.id] = { peer: ev.peer, state: ev.state };
+          }
         })
       );
 
-      // Retry invitation if not connected
+      // Retry if not connected
       if (ev.state !== PeerState.connected) {
         const retryInvite = (attempts = 0) => {
-          if (
-            session &&
-            peers[ev.peer.id]?.state !== PeerState.connected &&
-            attempts < 10 // limit retries to 10
-          ) {
+          if (session && peers[ev.peer.id]?.state !== PeerState.connected && attempts < 10) {
             session.invite(ev.peer.id);
-            setTimeout(() => retryInvite(attempts + 1), 1000); // retry after 1s
+            setTimeout(() => retryInvite(attempts + 1), 1000);
           }
         };
         retryInvite();
       }
     });
 
+    const r6 = session.onReceivedPeerInvitation((ev) => {
+      addLog(`Invitation from: ${ev.peer.displayName}`);
+      ev.handler(true);
+    });
 
-    const r6 = session.onReceivedPeerInvitation((ev) => ev.handler(true));
     const r7 = session.onReceivedText((ev) => {
-      let msg = ev.text;
-
-      addLog(ev.text);
-      addLog(ev.peer.id);
-      addLog("==========")
-
-      setReceivedMessages(
-        produce((draft) => {
-          (draft[ev.peer.id] ||= []).push(msg);
-        })
-      );
-
-      // Relay broadcast messages
-      if (msg.startsWith('[BR]')) {
-        // strip the broadcast prefix before re-sending
-        const clean = msg.replace(/^\[BR\]\s?/, '');
-        sendMessage(clean, true);
+      const message = deserializeMessage(ev.text);
+      if (message) {
+        receiveMessage(ev.peer.id, message);
       }
     });
 
@@ -208,7 +337,7 @@ export default function App() {
         <TextInput
           style={{ fontSize: 30, borderWidth: 1, padding: 10, width: 300 }}
           placeholder="display name"
-          onSubmitEditing={async (ev) => {
+          onSubmitEditing={(ev) => {
             const name = ev.nativeEvent.text;
             setDisplayName(name);
 
@@ -224,6 +353,7 @@ export default function App() {
 
             setSession(s);
             setPeerID(s.peerID);
+            addLog(`Session created: ${s.peerID}`);
           }}
         />
       </View>
@@ -231,167 +361,191 @@ export default function App() {
   }
 
   return (
-  <TouchableWithoutFeedback onPress={Keyboard.dismiss} accessible={false}>
-    <View style={styles.container}>
-      <Text style={{ fontSize: 16, marginBottom: 10 }}>
-        my persistent ID: {persistentID}
-      </Text>
+    <TouchableWithoutFeedback onPress={Keyboard.dismiss} accessible={false}>
+      <ScrollView style={styles.scrollContainer}>
+        <View style={styles.container}>
+          <Text style={{ fontSize: 16, marginBottom: 10 }}>
+            Persistent ID: {persistentID}
+          </Text>
+          <Text style={{ fontSize: 12, color: 'gray' }}>
+            {displayName}
+          </Text>
 
-      <View style={{ marginVertical: 20 }}>
-        <View style={styles.toggleRow}>
-          <Text>Set Available</Text>
-          <Switch
-            value={isBrowsing}
-            onValueChange={(v) => {
-              addLog("switch pressed");
-              setIsBrowsing(v);
-              v ? session?.browse() : session?.stopBrowsing();
-              setIsAdvertising(v);
-              v ? session?.advertize() : session?.stopAdvertizing();
+          <View style={{ marginVertical: 20 }}>
+            {isBrowsing ? (
+              <Button
+                title="Stop Browse & Advertise"
+                onPress={() => {
+                  session?.stopBrowsing();
+                  session?.stopAdvertizing();
+                  setIsBrowsing(false);
+                  setIsAdvertising(false);
+                }}
+              />
+            ) : (
+              <Button
+                title="Start Browse & Advertise"
+                onPress={() => {
+                  session?.browse();
+                  session?.advertize();
+                  setIsBrowsing(true);
+                  setIsAdvertising(true);
+                }}
+              />
+            )}
+            <Text style={{ fontSize: 12, color: 'gray', marginTop: 5 }}>
+              {isBrowsing ? '🟢 Active' : '🔴 Inactive'} | Peers: {Object.keys(peers).length}
+            </Text>
+          </View>
+
+          <Button
+            title="Disconnect All"
+            onPress={() => {
+              session?.disconnect();
+              setPeers({});
             }}
           />
-        </View>
-      </View>
 
-      <Button
-        title="Disconnect"
-        onPress={() => {
-          session?.disconnect();
-          setPeers({});
-        }}
-      />
-
-      {/* Broadcast section */}
-      <View style={{ marginTop: 20, width: '90%' }}>
-        <Text>Broadcast message to all peers:</Text>
-        <TextInput
-          style={{ borderWidth: 1, padding: 5, marginTop: 5 }}
-          placeholder="Enter broadcast message"
-          value={broadcastMessage}
-          onChangeText={setBroadcastMessage}
-          onSubmitEditing={() => {
-            const msg = broadcastMessage.trim();
-            if (!msg) return;
-
-            const formattedMsg = "[BR] " + msg;
-
-            Object.keys(peers).forEach((id) => {
-              if (peers[id].state === PeerState.connected) {
-                sendMessage(formattedMsg, true);
-                // Add the sent message to local state so it displays
-                setReceivedMessages(
-                  produce((draft) => {
-                    (draft[id] ||= []).push(formattedMsg);
-                  })
-                );
-              }
-            });
-
-            setBroadcastMessage('');
-          }}
-        />
-      </View>
-
-      {/* Found peers list */}
-      <View style={{ marginTop: 30, width: '90%' }}>
-        <Text>Found peers:</Text>
-        {Object.entries(peers).map(([id, info]) => (
-          <View key={id} style={styles.peerBox}>
-            <Pressable
+          {/* BROADCAST */}
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>📢 Broadcast</Text>
+            <TextInput
+              style={styles.input}
+              placeholder="Broadcast message"
+              value={broadcastInput}
+              onChangeText={setBroadcastInput}
+            />
+            <Button
+              title="Send Broadcast"
               onPress={() => {
-                if (info.state !== PeerState.connected) session?.invite(id);
+                if (broadcastInput.trim()) {
+                  initiateBroadcast(broadcastInput.trim());
+                  setBroadcastInput('');
+                }
               }}
-            >
-              <Text>
-                {id} - {info.state}
-              </Text>
-              <Text>displayName: {info.peer.displayName}</Text>
-              <Text>persistentID: {info.discoveryInfo?.myPersistentID}</Text>
-            </Pressable>
-
-            {info.state === PeerState.connected && (
-              <>
-                <TextInput
-                  style={{ borderWidth: 1, marginTop: 5 }}
-                  placeholder="send a message"
-                  onSubmitEditing={(ev) => {
-                    const msg = ev.nativeEvent.text.trim();
-                    if (msg) sendMessage(msg, false, id);
-                  }}
-                />
-
-
-                <View style={{ marginTop: 10 }}>
-                  <Text>Message History:</Text>
-                  {receivedMessages[id] && receivedMessages[id].map((msg, idx) => (
-                    <Text key={idx}>{msg}</Text>
-                  ))}
-                </View>
-              </>
-            )}
+            />
           </View>
-        ))}
-      </View>
 
-      {/* Relay message section */}
-      <View style={{ marginTop: 30, width: '90%' }}>
-        <Text>Send message through neighbors:</Text>
-        
-        <TextInput
-          style={{ borderWidth: 1, marginTop: 5, padding: 5 }}
-          placeholder="Enter target peer ID"
-          value={relayTargetId}
-          onChangeText={setRelayTargetId}
-        />
+          {/* DISTANT MESSAGE */}
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>🌐 Distant Message</Text>
+            <TextInput
+              style={styles.input}
+              placeholder="Recipient Persistent ID"
+              value={distantRecipient}
+              onChangeText={setDistantRecipient}
+            />
+            <TextInput
+              style={styles.input}
+              placeholder="Message"
+              value={distantMessageInput}
+              onChangeText={setDistantMessageInput}
+            />
+            <Button
+              title="Send via Network"
+              onPress={() => {
+                if (distantRecipient.trim() && distantMessageInput.trim()) {
+                  sendDistantMessage(distantRecipient.trim(), distantMessageInput.trim());
+                  setDistantMessageInput('');
+                }
+              }}
+            />
+          </View>
 
-        <TextInput
-          style={{ borderWidth: 1, marginTop: 5, padding: 5 }}
-          placeholder="Enter message"
-          value={relayMessage}
-          onChangeText={setRelayMessage}
-          onSubmitEditing={() => {
-            const msg = relayMessage.trim();
-            if (!msg || !relayTargetId) return;
+          {/* PEERS */}
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>👥 Peers</Text>
+            {Object.entries(peers).map(([id, info]) => (
+              <View key={id} style={styles.peerBox}>
+                <Pressable onPress={() => session?.invite(id)}>
+                  <Text style={{ fontWeight: 'bold' }}>
+                    {info.peer.displayName} (State: {info.state})
+                  </Text>
+                  <Text style={{ fontSize: 10, color: 'gray' }}>
+                    ID: {info.discoveryInfo?.myPersistentID}
+                  </Text>
+                </Pressable>
 
-            // Send message to all neighbors except target
-            Object.keys(peers).forEach((id) => {
-              if (peers[id].state === PeerState.connected) {
-                sendMessage(msg, false, id, relayTargetId);
-              }
-            });
+                {info.state === PeerState.connected && (
+                  <>
+                    <TextInput
+                      style={styles.input}
+                      placeholder="Direct message"
+                      onSubmitEditing={(ev) => {
+                        const msg = ev.nativeEvent.text.trim();
+                        if (msg) {
+                          sendNeighborMessage(id, msg);
+                          ev.currentTarget.clear();
+                        }
+                      }}
+                    />
 
-            addLog(`Relay message sent to neighbors for target ${relayTargetId}`);
-            setRelayMessage('');
-          }}
-        />
-      </View>
+                    <View style={{ marginTop: 10 }}>
+                      <Text style={{ fontWeight: 'bold' }}>Messages:</Text>
+                      {receivedMessages[id] && receivedMessages[id].length > 0 ? (
+                        receivedMessages[id].map((msg, idx) => (
+                          <Text key={idx} style={{ fontSize: 12 }}>{msg}</Text>
+                        ))
+                      ) : (
+                        <Text style={{ fontSize: 12, color: 'gray' }}>No messages</Text>
+                      )}
+                    </View>
+                  </>
+                )}
+              </View>
+            ))}
+          </View>
 
-
-      {/* DEBUG VIEW */}
-      <ScrollView>
-        {devLogs.map((l, i) => (
-          <Text key={i}>{l}</Text>
-        ))}
+          {/* DEBUG */}
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>🐛 Logs</Text>
+            {devLogs.slice(-15).reverse().map((l, i) => (
+              <Text key={i} style={{ fontSize: 10 }}>{l}</Text>
+            ))}
+          </View>
+        </View>
       </ScrollView>
-     </View>
     </TouchableWithoutFeedback>
   );
 }
 
 const styles = StyleSheet.create({
+  scrollContainer: {
+    flex: 1,
+    backgroundColor: 'white',
+  },
   container: {
     flex: 1,
     alignItems: 'center',
-    justifyContent: 'flex-start',
     paddingTop: 80,
-    backgroundColor: 'white',
+    paddingBottom: 40,
   },
-  toggleRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    width: 200,
-    marginVertical: 10,
+  section: {
+    marginTop: 20,
+    width: '90%',
+    padding: 15,
+    borderWidth: 1,
+    borderColor: '#ddd',
+    borderRadius: 8,
   },
-  peerBox: { borderWidth: 1, padding: 8, marginVertical: 10 },
+  sectionTitle: {
+    fontSize: 16,
+    fontWeight: 'bold',
+    marginBottom: 10,
+  },
+  input: {
+    borderWidth: 1,
+    borderColor: '#ccc',
+    padding: 8,
+    marginVertical: 5,
+    borderRadius: 5,
+  },
+  peerBox: {
+    borderWidth: 1,
+    borderColor: '#ddd',
+    padding: 10,
+    marginVertical: 5,
+    borderRadius: 5,
+    backgroundColor: '#f9f9f9',
+  },
 });
