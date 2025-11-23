@@ -20,6 +20,7 @@ import {
 import { produce } from 'immer';
 import RNFS from 'react-native-fs';
 import DocumentPicker from 'react-native-document-picker';
+import Share from 'react-native-share';
 
 // Message Protocol
 const MessageSignal = {
@@ -104,6 +105,13 @@ export default function App() {
       await RNFS.writeFile(filePath, base64String, "base64");
 
       addLog(`File reconstructed and saved at: ${filePath}`);
+
+      await Share.open({
+        url: `file://${filePath}`,
+        type: 'application/octet-stream',
+        title: `Save ${finalFileName}`,
+      });
+  
       return filePath;
     } catch (err) {
       addLog(`Failed to save file: ${err}`);
