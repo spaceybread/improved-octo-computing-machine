@@ -56,6 +56,30 @@ class Node:
                 for node in comp:
                     node.cc = comp
 
+
 if __name__ == "__main__":
+    print("\n=== Creating isolated nodes ===")
     n1 = Node("mac1")
-    n2 = Node("mac2", neighbors={n1})
+    n2 = Node("mac2")
+    n3 = Node("mac3")
+    n4 = Node("mac4")
+
+    print("\n=== Connecting n2 to n1 ===")
+    n2.add_node({n1})
+
+    print("\n=== Connecting n3 to n1 ===")
+    n3.add_node({n1})
+
+    print("\n=== Connecting n4 to n3 ===")
+    n4.add_node({n3})
+
+    print("\n=== FINAL CC STATES BEFORE REMOVAL ===")
+    for n in [n1, n2, n3, n4]:
+        print(f"{n.MAC}.cc = {[x.MAC for x in n.cc]}")
+
+    print("\n=== Removing n1 (splitting the graph) ===")
+    n1.remove_node()
+
+    print("\n=== FINAL CC STATES AFTER REMOVAL ===")
+    for n in [n1, n2, n3, n4]:
+        print(f"{n.MAC}.cc = {[x.MAC for x in n.cc]}")
