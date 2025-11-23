@@ -7,6 +7,7 @@ import {
   Text,
   TextInput,
   View,
+  Switch,
 } from 'react-native';
 import {
   initSession,
@@ -19,15 +20,12 @@ export default function App() {
   const [displayName, setDisplayName] = useState('');
   const [peerID, setPeerID] = useState('');
   const [isBrowsing, setIsBrowsing] = useState(false);
-  const [isAdvertizing, setIsAdvertizing] = useState(false);
+  const [isAdvertising, setIsAdvertising] = useState(false);
+
   const [peers, setPeers] = React.useState<
     Record<
       string,
-      {
-        state: PeerState;
-        peer: RNPeer;
-        discoveryInfo?: Record<string, string>;
-      }
+      { state: PeerState; peer: RNPeer; discoveryInfo?: Record<string, string> }
     >
   >({});
   const [receivedMessages, setReceivedMessages] = React.useState<
@@ -41,18 +39,12 @@ export default function App() {
   React.useEffect(() => {
     if (!session) return;
 
-    const r1 = session.onStartAdvertisingError((ev) => {
-      setIsAdvertizing(false);
-      console.log('onStartAdvertisingError：', ev);
-    });
-    const r2 = session.onStartBrowsingError((ev) => {
-      setIsBrowsing(false);
-      console.log('onStartBrowsingError：', ev);
-    });
+    const r1 = session.onStartAdvertisingError(() => setIsAdvertising(false));
+    const r2 = session.onStartBrowsingError(() => setIsBrowsing(false));
+
     const r3 = session.onFoundPeer((ev) => {
       setPeers(
         produce((draft) => {
-          // onFoundPeer will be called even if the peer found before when you re-advertize
           if (!draft[ev.peer.id]) {
             draft[ev.peer.id] = {
               peer: ev.peer,
@@ -62,40 +54,37 @@ export default function App() {
           }
         })
       );
-      console.log('onFoundPeer：', ev);
     });
+
     const r4 = session.onLostPeer((ev) => {
-      console.log('onLostPeer：', ev);
       setPeers(
         produce((draft) => {
           delete draft[ev.peer.id];
         })
       );
     });
+
     const r5 = session.onPeerStateChanged((ev) => {
-      console.log('onPeerStateChanged：', ev);
       setPeers(
         produce((draft) => {
-          if (draft[ev.peer.id]) draft[ev.peer.id].state = ev.state;
-          else {
+          if (draft[ev.peer.id]) {
+            draft[ev.peer.id].state = ev.state;
+          } else {
             draft[ev.peer.id] = {
-              state: ev.state,
               peer: ev.peer,
+              state: ev.state,
             };
           }
         })
       );
     });
-    const r6 = session.onReceivedPeerInvitation((ev) => {
-      console.log('onReceivedPeerInvitation：', ev);
-      ev.handler(true);
-    });
+
+    const r6 = session.onReceivedPeerInvitation((ev) => ev.handler(true));
+
     const r7 = session.onReceivedText((ev) => {
-      console.log('onReceivedText：', ev);
       setReceivedMessages(
         produce((draft) => {
-          if (draft[ev.peer.id]) draft[ev.peer.id].push(ev.text);
-          else draft[ev.peer.id] = [ev.text];
+          (draft[ev.peer.id] ||= []).push(ev.text);
         })
       );
     });
@@ -123,7 +112,6 @@ export default function App() {
           style={{
             fontSize: 30,
             borderWidth: 1,
-            borderColor: 'white',
             padding: 10,
             width: 300,
           }}
@@ -132,7 +120,7 @@ export default function App() {
             const name = ev.nativeEvent.text;
             setDisplayName(name);
 
-            const session = initSession({
+            const s = initSession({
               displayName: name,
               serviceType: 'demo',
               discoveryInfo: {
@@ -141,8 +129,8 @@ export default function App() {
               },
             });
 
-            setSession(session);
-            setPeerID(session.peerID);
+            setSession(s);
+            setPeerID(s.peerID);
           }}
         />
       </View>
@@ -152,40 +140,33 @@ export default function App() {
   return (
     <View style={styles.container}>
       <Text>my id: {peerID}</Text>
-      {isBrowsing ? (
-        <Button
-          title={'stop browse'}
-          onPress={() => {
-            session?.stopBrowsing();
-            setIsBrowsing(false);
-          }}
-        />
-      ) : (
-        <Button
-          title={'start browse'}
-          onPress={() => {
-            session?.browse();
-            setIsBrowsing(true);
-          }}
-        />
-      )}
-      {isAdvertizing ? (
-        <Button
-          title={'stop advertize'}
-          onPress={() => {
-            session?.stopAdvertizing();
-            setIsAdvertizing(false);
-          }}
-        />
-      ) : (
-        <Button
-          title={'start advertize'}
-          onPress={() => {
-            session?.advertize();
-            setIsAdvertizing(true);
-          }}
-        />
-      )}
+
+      <View style={{ marginVertical: 20 }}>
+        <View style={styles.toggleRow}>
+          <Text>Browsing</Text>
+          <Switch
+            value={isBrowsing}
+            onValueChange={(v) => {
+              setIsBrowsing(v);
+              if (v) session?.browse();
+              else session?.stopBrowsing();
+            }}
+          />
+        </View>
+
+        <View style={styles.toggleRow}>
+          <Text>Advertising</Text>
+          <Switch
+            value={isAdvertising}
+            onValueChange={(v) => {
+              setIsAdvertising(v);
+              if (v) session?.advertize();
+              else session?.stopAdvertizing();
+            }}
+          />
+        </View>
+      </View>
+
       <Button
         title={'disconnect'}
         onPress={() => {
@@ -194,56 +175,49 @@ export default function App() {
         }}
       />
 
-      <View>
+      <View style={{ marginTop: 30, width: '90%' }}>
         <Text>Found peers:</Text>
-        {Object.entries(peers).map(([id, info]) => {
-          return (
-            <View
-              key={id}
-              style={{
-                borderWidth: 1,
-                borderColor: 'white',
-                marginBottom: 10,
-                padding: 4,
+
+        {Object.entries(peers).map(([id, info]) => (
+          <View key={id} style={styles.peerBox}>
+            <Pressable
+              onPress={() => {
+                if (info.state !== PeerState.connected) {
+                  session?.invite(id);
+                }
               }}
             >
-              <Pressable
-                onPress={() => {
-                  session?.invite(id);
-                }}
-              >
-                <Text>
-                  {id} - {info.state}
-                </Text>
-                <Text>displayName: {info.peer.displayName}</Text>
-                <Text>discoveryInfo: {JSON.stringify(info.discoveryInfo)}</Text>
-              </Pressable>
+              <Text>
+                {id} - {info.state}
+              </Text>
+              <Text>displayName: {info.peer.displayName}</Text>
+            </Pressable>
 
-              {/* chat */}
-              {info.state === PeerState.connected ? (
-                <View>
-                  <TextInput
-                    style={{ borderColor: 'gray', borderWidth: 1 }}
-                    placeholder={'input text'}
-                    onSubmitEditing={(ev) => {
-                      session?.sendText(id, ev.nativeEvent.text);
-                    }}
-                  />
-                </View>
-              ) : null}
+            {info.state === PeerState.connected && (
+              <View>
+                <TextInput
+                  style={{ borderWidth: 1, marginTop: 5 }}
+                  placeholder="send a message"
+                  onSubmitEditing={(ev) => {
+                    const text = ev.nativeEvent.text;
+                    if (text.trim().length > 0) {
+                      session?.sendText(id, text);
+                    }
+                  }}
+                />
+              </View>
+            )}
 
-              {/* received messages*/}
-              {receivedMessages[id] ? (
-                <View>
-                  <Text>Received messages:</Text>
-                  {receivedMessages[id].map((msg, idx) => {
-                    return <Text key={idx}>{msg}</Text>;
-                  })}
-                </View>
-              ) : null}
-            </View>
-          );
-        })}
+            {receivedMessages[id] && (
+              <View style={{ marginTop: 10 }}>
+                <Text>Received messages:</Text>
+                {receivedMessages[id].map((msg, idx) => (
+                  <Text key={idx}>{msg}</Text>
+                ))}
+              </View>
+            )}
+          </View>
+        ))}
       </View>
     </View>
   );
@@ -253,12 +227,20 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: 'white'
+    justifyContent: 'flex-start',
+    paddingTop: 80,
+    backgroundColor: 'white',
   },
-  box: {
-    width: 60,
-    height: 60,
-    marginVertical: 20,
+  toggleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    width: 200,
+    marginVertical: 10,
+  },
+  peerBox: {
+    borderWidth: 1,
+    padding: 8,
+    marginVertical: 10,
   },
 });
