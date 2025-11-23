@@ -132,7 +132,7 @@ export default function App() {
         Object.keys(peersRef.current).forEach((id) => {
           const p = peersRef.current[id];
           if (id !== ev.peer.id && p.state === PeerState.connected) {
-            session?.sendText(id, ev.text + " <Relayed>");
+            session?.sendText(id, ev.text);
           }
         });
       }
