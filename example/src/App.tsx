@@ -69,6 +69,8 @@ export default function App() {
               state: PeerState.notConnected,
               discoveryInfo: ev.discoveryInfo,
             };
+    
+            session?.sendText(ev.peer.id, "HANDSHAKE3141");
           }
         })
       );
@@ -90,15 +92,17 @@ export default function App() {
     });
     const r6 = session.onReceivedPeerInvitation((ev) => ev.handler(true));
     const r7 = session.onReceivedText((ev) => {
+      // Ignore handshake messages
+      if (ev.text === "HANDSHAKE3141") return;
+    
       setReceivedMessages(
         produce((draft) => {
           (draft[ev.peer.id] ||= []).push(ev.text);
         })
       );
     
-      // Check if this is a broadcast message
+      // Relay broadcast messages
       if (/^\[.*?\]\s/.test(ev.text)) {
-        // Relay it to everyone except the sender
         Object.keys(peers).forEach((id) => {
           if (id !== ev.peer.id && peers[id].state === PeerState.connected) {
             session?.sendText(id, ev.text);
