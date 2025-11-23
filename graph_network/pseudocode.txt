@@ -1,0 +1,19 @@
+every node has its own ids and ids of its direct connections (neighbors)
+
+assumptions:
+can directly ping anyone in your connected component mesh
+
+1. how to find connected components:
+distributed DFS algorithm:
+FLAG COMPUTE CC: inititate CC computation
+first node is the initializer
+- add yourself to visited set and send this to unvisted neighbors, keep track of parent
+- once initializer is done exploring:
+FLAG UPDATE CC: flood/gossip the CC to the network
+
+
+2. how to add nodes:
+new connected component is the union of all neighbors and yourself. flood or gossip this new cc to everything using FLAG UPDATE CC or something
+
+3. how to remove a node
+when you disconnect, the neighbors run the DDFS to recompute their CC
