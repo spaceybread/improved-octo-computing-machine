@@ -93,11 +93,12 @@ export default function App() {
     const r6 = session.onReceivedPeerInvitation((ev) => ev.handler(true));
     const r7 = session.onReceivedText((ev) => {
       // Ignore handshake messages
-      if (ev.text === "HANDSHAKE3141") return;
-    
+      let msg = ev.text; 
+      if (ev.text !== "HANDSHAKE3141") msg = "";
+      
       setReceivedMessages(
         produce((draft) => {
-          (draft[ev.peer.id] ||= []).push(ev.text);
+          (draft[ev.peer.id] ||= []).push(msg);
         })
       );
     
