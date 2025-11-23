@@ -160,23 +160,31 @@ export default function App() {
 
   const handleRelay = (msg, fromPeerId) => {
     if (!msg || !msg.id) return;
+  
     const seen = seenMessageIdsRef.current;
-    if (seen.has(msg.id)) return;
+    if (seen.has(msg.id)) return; // avoid loops
     seen.add(msg.id);
-
-    // Only display if dst matches my peerID
-    if (msg.dst === peerID) pushReceived(msg.src || fromPeerId, `[flood-delivered] ${msg.text}`);
-
+  
+    // Show message in UI
+    if (msg.dst === peerID) {
+      pushReceived(msg.src || fromPeerId, `[flood-delivered] ${msg.text}`);
+    } else {
+      pushReceived(msg.src || fromPeerId, `[FLOOD] ${msg.text} (to ${msg.dst})`);
+    }
+  
     // Forward to all connected neighbors except sender
     if (msg.ttl > 0) {
       const forward = { ...msg, ttl: msg.ttl - 1 };
       Object.entries(peers).forEach(([id, info]) => {
         if (info.state === PeerState.connected && id !== fromPeerId) {
-          try { session?.sendText(id, JSON.stringify(forward)); } catch (e) {}
+          try {
+            session?.sendText(id, JSON.stringify(forward));
+          } catch (e) {}
         }
       });
     }
   };
+  
 
   const sendMultiHop = (targetId, text) => {
     if (!session || !peerID || !targetId || !text.trim()) return;
