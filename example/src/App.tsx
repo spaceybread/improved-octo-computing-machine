@@ -69,12 +69,13 @@ export default function App() {
               state: PeerState.notConnected,
               discoveryInfo: ev.discoveryInfo,
             };
-    
-            session?.sendText(ev.peer.id, "HANDSHAKE3141");
+            // Immediately invite the peer
+            session?.invite(ev.peer.id);
           }
         })
       );
     });
+    
     const r4 = session.onLostPeer((ev) => {
       setPeers(
         produce((draft) => {
@@ -89,13 +90,28 @@ export default function App() {
           else draft[ev.peer.id] = { peer: ev.peer, state: ev.state };
         })
       );
+    
+      // Retry invitation if not connected
+      if (ev.state !== PeerState.connected) {
+        const retryInvite = (attempts = 0) => {
+          if (
+            session &&
+            peers[ev.peer.id]?.state !== PeerState.connected &&
+            attempts < 10 // limit retries to 10
+          ) {
+            session.invite(ev.peer.id);
+            setTimeout(() => retryInvite(attempts + 1), 1000); // retry after 1s
+          }
+        };
+        retryInvite();
+      }
     });
+    
+    
     const r6 = session.onReceivedPeerInvitation((ev) => ev.handler(true));
     const r7 = session.onReceivedText((ev) => {
-      // Ignore handshake messages
       let msg = ev.text; 
-      if (ev.text === "HANDSHAKE3141") msg = "";
-
+    
       setReceivedMessages(
         produce((draft) => {
           (draft[ev.peer.id] ||= []).push(msg);
@@ -164,20 +180,12 @@ export default function App() {
 
       <View style={{ marginVertical: 20 }}>
         <View style={styles.toggleRow}>
-          <Text>Browsing</Text>
+          <Text>Set Available</Text>
           <Switch
             value={isBrowsing}
             onValueChange={(v) => {
               setIsBrowsing(v);
               v ? session?.browse() : session?.stopBrowsing();
-            }}
-          />
-        </View>
-        <View style={styles.toggleRow}>
-          <Text>Advertising</Text>
-          <Switch
-            value={isAdvertising}
-            onValueChange={(v) => {
               setIsAdvertising(v);
               v ? session?.advertize() : session?.stopAdvertizing();
             }}
@@ -242,6 +250,7 @@ export default function App() {
             </Pressable>
 
             {info.state === PeerState.connected && (
+            <>
               <TextInput
                 style={{ borderWidth: 1, marginTop: 5 }}
                 placeholder="send a message"
@@ -250,16 +259,15 @@ export default function App() {
                     session?.sendText(id, ev.nativeEvent.text);
                 }}
               />
-            )}
 
-            {receivedMessages[id] && (
               <View style={{ marginTop: 10 }}>
-                <Text>Received messages:</Text>
-                {receivedMessages[id].map((msg, idx) => (
+                <Text>Message History:</Text>
+                {receivedMessages[id] && receivedMessages[id].map((msg, idx) => (
                   <Text key={idx}>{msg}</Text>
                 ))}
               </View>
-            )}
+            </>
+          )}
           </View>
         ))}
       </View>
